@@ -1,0 +1,32 @@
+{
+  "Rules": [
+    {
+      "SettingName": "ZscalerInstalled",
+      "Operator": "IsEquals",
+      "DataType": "Boolean",
+      "Operand": true,
+      "MoreInfoUrl": "https://learn.microsoft.com/en-us/mem/intune/protect/compliance-use-custom-settings",
+      "RemediationStrings": [
+        {
+          "Language": "en_US",
+          "Title": "Zscaler SIA is not installed",
+          "Description": "Install the Zscaler Client Connector (package: zscaler) on this device."
+        }
+      ]
+    },
+    {
+      "SettingName": "ZscalerRunning",
+      "Operator": "IsEquals",
+      "DataType": "Boolean",
+      "Operand": true,
+      "MoreInfoUrl": "https://learn.microsoft.com/en-us/mem/intune/protect/compliance-use-custom-settings",
+      "RemediationStrings": [
+        {
+          "Language": "en_US",
+          "Title": "Zscaler SIA service is not running",
+          "Description": "Ensure the zscaler systemd service is active: sudo systemctl start zscaler"
+        }
+      ]
+    }
+  ]
+}

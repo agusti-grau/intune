@@ -1,0 +1,32 @@
+{
+  "Rules": [
+    {
+      "SettingName": "CrowdStrikeInstalled",
+      "Operator": "IsEquals",
+      "DataType": "Boolean",
+      "Operand": true,
+      "MoreInfoUrl": "https://learn.microsoft.com/en-us/mem/intune/protect/compliance-use-custom-settings",
+      "RemediationStrings": [
+        {
+          "Language": "en_US",
+          "Title": "CrowdStrike Falcon is not installed",
+          "Description": "Install the CrowdStrike Falcon sensor (package: falcon-sensor) on this device."
+        }
+      ]
+    },
+    {
+      "SettingName": "CrowdStrikeRunning",
+      "Operator": "IsEquals",
+      "DataType": "Boolean",
+      "Operand": true,
+      "MoreInfoUrl": "https://learn.microsoft.com/en-us/mem/intune/protect/compliance-use-custom-settings",
+      "RemediationStrings": [
+        {
+          "Language": "en_US",
+          "Title": "CrowdStrike Falcon service is not running",
+          "Description": "Ensure the falcon-sensor systemd service is active: sudo systemctl start falcon-sensor"
+        }
+      ]
+    }
+  ]
+}
