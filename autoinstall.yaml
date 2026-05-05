@@ -1,0 +1,101 @@
+#cloud-config
+# Ubuntu 26.04 autoinstall — desktop-minimal, LVM on LUKS, DHCP
+# Deliver via nocloud (cdrom/USB) or HTTP. Validate with:
+#   cloud-init schema --config-file autoinstall.yaml
+autoinstall:
+  version: 1
+
+  # ---- Run before block/network probing. /autoinstall.yaml is re-read after.
+  early-commands:
+    - echo "[early] autoinstall starting on $(date -u)" > /dev/kmsg
+    # placeholder — add your own (wipe sigs, ping check, set kernel-meta-package, etc.)
+
+  # ---- Pull the newest Subiquity before the install actually runs.
+  refresh-installer:
+    update: yes
+    channel: "stable/ubuntu-26.04"
+
+  locale: en_US.UTF-8
+  keyboard:
+    layout: us
+    variant: ""
+    toggle: null
+  timezone: geoip
+
+  # ---- Identity. Password hash below is SHA-512 crypt of "1234".
+  # Regenerate with:  openssl passwd -6 'yourpassword'
+  # WARNING: "1234" is trivially crackable — change before any real deploy.
+  identity:
+    hostname: ubuntu-laptop
+    realname: admin
+    username: admin
+    password: "$6$LGcmR6HPZinbOsq$ol6e/vtxiNbGixIr4HszT9rkZDy0JisyA21UiOwoZEEus6xke2piZeoKQGwfKVQkCLD5Ffax8LsXYEpZKrYMA/"
+
+  # ---- Ubuntu Pro attach. Replace placeholder or remove the block to skip.
+  ubuntu-pro:
+    token: "<PRO_TOKEN>"
+
+  # ---- Install source. search_drivers=true lets the installer offer 3rd-party drivers.
+  source:
+    search_drivers: true
+    id: ubuntu-desktop-minimal
+
+  # ---- DHCP on every ethernet, optional so install does not hang if cable is out.
+  network:
+    version: 2
+    ethernets:
+      eth-all:
+        match:
+          name: "en*"
+        dhcp4: true
+        dhcp6: false
+        optional: true
+
+  # ---- Storage: LVM on largest disk, encrypted (LUKS). Replace passphrase.
+  storage:
+    layout:
+      name: lvm
+      match:
+        size: largest
+      encrypted: true
+      password: "<LUKS_PASSPHRASE>"
+
+  # ---- Restricted codecs (mp3, h264, fonts, etc.). Requires network at install.
+  codecs:
+    install: true
+
+  # ---- Third-party drivers (NVIDIA / OEM kernels). Requires network.
+  drivers:
+    install: true
+
+  # ---- APT packages installed into the target. Replace placeholders.
+  packages:
+    - <package-1>
+    - <package-2>
+
+  # ---- Snaps installed into the target. Replace placeholders.
+  snaps:
+    - name: <snap-name>
+      channel: stable
+      classic: false
+
+  # ---- No SSH server.
+  ssh:
+    install-server: false
+    allow-pw: false
+
+  # ---- Run inside the installed system (curtin in-target chroot).
+  late-commands:
+    - curtin in-target -- /bin/sh -c 'echo "[late] $(date -u)" >> /var/log/autoinstall.log'
+    # placeholder — e.g.:
+    # - curtin in-target -- pro enable livepatch esm-infra esm-apps --assume-yes
+    # - curtin in-target -- snap refresh --hold=forever
+    # - cp /cdrom/extras/*.deb /target/var/cache/apt/archives/ || true
+
+  # ---- Run only on fatal install failure (non-zero exits here are ignored).
+  error-commands:
+    - tar czf /var/log/installer/autoinstall-error-$(date +%s).tgz /var/log/installer || true
+    # placeholder — e.g. ship logs over the network with curl
+
+  # ---- Reboot when finished.
+  shutdown: reboot
