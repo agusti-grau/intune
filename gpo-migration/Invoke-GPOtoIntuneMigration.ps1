@@ -182,8 +182,11 @@ function Get-XmlValue {
     if ($null -eq $Node) { return $Default }
     $child = $Node.SelectSingleNode(".//*[local-name()='$LocalName']")
     if ($child) { return $child.InnerText }
-    # Try direct attribute
-    if ($Node.$LocalName) { return $Node.$LocalName }
+    # Try XML attribute (safe method call, no StrictMode issues)
+    try {
+        $attr = $Node.GetAttribute($LocalName)
+        if ($attr) { return $attr }
+    } catch { }
     return $Default
 }
 
@@ -355,7 +358,7 @@ function Parse-SecurityExtension {
     foreach ($ur in $urNodes) {
         $right = Get-XmlValue $ur "Name"
         if (-not $right) { continue }
-        $members = $ur.SelectNodes(".//*[local-name()='Name'][not(*)]") |
+        $members = $ur.SelectNodes(".//*[local-name()='Member']//*[local-name()='Name']") |
                    ForEach-Object { $_.InnerText } |
                    Select-Object -Unique
         $Report.UserRights.Add([PSCustomObject]@{
@@ -369,9 +372,11 @@ function Parse-SecurityExtension {
     foreach ($so in $soNodes) {
         $key = Get-XmlValue $so "KeyName"
         if (-not $key) { continue }
+        $soVal = Get-XmlValue $so "SettingNumber"
+        if (-not $soVal) { $soVal = Get-XmlValue $so "SettingStrings" }
         $Report.SecurityOptions.Add([PSCustomObject]@{
             KeyName = $key
-            Value   = (Get-XmlValue $so "SettingNumber") ?? (Get-XmlValue $so "SettingStrings")
+            Value   = $soVal
         }) | Out-Null
     }
 
@@ -1215,12 +1220,11 @@ foreach ($b in $backups) {
     $r = Read-GPOReport -Backup $b
     if ($r) {
         $reports.Add($r) | Out-Null
-        $settingCount = (
-            ($r.AuditSettings.Count) + ($r.UserRights.Count) + ($r.SecurityOptions.Count) +
-            ($r.FirewallRules.Count) + ($r.RegistrySettings.Count) + ($r.Scripts.Count) +
-            (if ($r.PasswordPolicy) { 1 } else { 0 }) +
-            (if ($r.FirewallProfiles) { 1 } else { 0 })
-        )
+        $ppCount  = if ($r.PasswordPolicy)   { 1 } else { 0 }
+        $fwpCount = if ($r.FirewallProfiles) { 1 } else { 0 }
+        $settingCount = $r.AuditSettings.Count + $r.UserRights.Count + $r.SecurityOptions.Count +
+            $r.FirewallRules.Count + $r.RegistrySettings.Count + $r.Scripts.Count +
+            $ppCount + $fwpCount
         Write-Log "  → '$($r.Name)'  ($settingCount setting group(s) found)" "SUCCESS"
     }
 }
