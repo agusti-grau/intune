@@ -101,19 +101,43 @@ function Write-Section {
 }
 
 # ──────────────────────────────────────────────────────────────
+# OUTPUT HELPERS
+# ──────────────────────────────────────────────────────────────
+
+function ConvertTo-HtmlEncode {
+    param([string]$s)
+    if (-not $s) { return '' }
+    $s = $s.Replace('&',  '&amp;')
+    $s = $s.Replace('<',  '&lt;')
+    $s = $s.Replace('>',  '&gt;')
+    $s = $s.Replace('"',  '&quot;')
+    $s = $s.Replace("'",  '&#39;')
+    return $s
+}
+
+function Limit-PolicyName {
+    param([string]$Name)
+    if ($Name.Length -gt 256) { return $Name.Substring(0, 256) }
+    return $Name
+}
+
+# ──────────────────────────────────────────────────────────────
 # MODULE & GRAPH AUTH
 # ──────────────────────────────────────────────────────────────
 
 function Initialize-GraphConnection {
     Write-Section "Connecting to Microsoft Graph"
 
-    if (-not (Get-Module -ListAvailable -Name Microsoft.Graph.Authentication)) {
+    $minMgVersion = [Version]"2.0.0"
+    $mgModule = Get-Module -ListAvailable -Name Microsoft.Graph.Authentication |
+                Sort-Object Version -Descending | Select-Object -First 1
+    if (-not $mgModule -or $mgModule.Version -lt $minMgVersion) {
         if ($SkipModuleInstall) {
-            Write-Log "Microsoft.Graph.Authentication not found. Install it or remove -SkipModuleInstall." "ERROR"
+            Write-Log "Microsoft.Graph.Authentication v$minMgVersion+ not found. Install it or remove -SkipModuleInstall." "ERROR"
             throw "Module not available"
         }
-        Write-Log "Installing Microsoft.Graph.Authentication (CurrentUser)..." "WARN"
-        Install-Module Microsoft.Graph.Authentication -Scope CurrentUser -Force -AllowClobber -Repository PSGallery
+        Write-Log "Installing Microsoft.Graph.Authentication >= $minMgVersion (CurrentUser)..." "WARN"
+        Install-Module Microsoft.Graph.Authentication -Scope CurrentUser -Force -MinimumVersion $minMgVersion -Repository PSGallery
     }
 
     Import-Module Microsoft.Graph.Authentication -ErrorAction Stop
@@ -137,15 +161,38 @@ function Initialize-GraphConnection {
 # GRAPH API WRAPPERS
 # ──────────────────────────────────────────────────────────────
 
+function Invoke-WithRetry {
+    param([scriptblock]$Action, [int]$MaxAttempts = 3)
+    $attempt = 0
+    while ($true) {
+        $attempt++
+        try { return (& $Action) }
+        catch {
+            $code = 0
+            try { $code = [int]$_.Exception.Response.StatusCode.value__ } catch {}
+            $retryable = ($code -in @(429, 500, 502, 503, 504)) -or
+                         ($code -eq 0 -and $_.Exception -is [System.Net.Http.HttpRequestException])
+            if ($attempt -ge $MaxAttempts -or -not $retryable) { throw }
+            $delay = [Math]::Pow(2, $attempt)
+            try {
+                $ra = $_.Exception.Response.Headers['Retry-After']
+                if ($ra -match '^\d+$') { $delay = [Math]::Min([int]$ra, 120) }
+            } catch {}
+            Write-Log "HTTP $code — retry $attempt/$MaxAttempts in ${delay}s" "WARN"
+            Start-Sleep -Seconds $delay
+        }
+    }
+}
+
 function Invoke-GPost {
     param([string]$Uri, [hashtable]$Body)
     $json = $Body | ConvertTo-Json -Depth 20 -Compress
-    return Invoke-MgGraphRequest -Method POST -Uri $Uri -Body $json -ContentType "application/json" -ErrorAction Stop
+    return Invoke-WithRetry { Invoke-MgGraphRequest -Method POST -Uri $Uri -Body $json -ContentType "application/json" -ErrorAction Stop }
 }
 
 function Invoke-GGet {
     param([string]$Uri)
-    return Invoke-MgGraphRequest -Method GET -Uri $Uri -ErrorAction Stop
+    return Invoke-WithRetry { Invoke-MgGraphRequest -Method GET -Uri $Uri -ErrorAction Stop }
 }
 
 # ──────────────────────────────────────────────────────────────
@@ -177,9 +224,25 @@ function Get-GPOBackupList {
 # XML PARSING HELPERS
 # ──────────────────────────────────────────────────────────────
 
+function Read-XmlSafe {
+    param([string]$FilePath)
+    $settings = [System.Xml.XmlReaderSettings]::new()
+    $settings.DtdProcessing = [System.Xml.DtdProcessing]::Prohibit
+    $settings.XmlResolver   = $null
+    $reader = [System.Xml.XmlReader]::Create($FilePath, $settings)
+    try {
+        $doc = [System.Xml.XmlDocument]::new()
+        $doc.Load($reader)
+        return $doc
+    } finally {
+        $reader.Close()
+    }
+}
+
 function Get-XmlValue {
     param($Node, [string]$LocalName, [string]$Default = $null)
     if ($null -eq $Node) { return $Default }
+    if ($LocalName -notmatch '^[\w-]+$') { return $Default }   # XPath injection guard
     $child = $Node.SelectSingleNode(".//*[local-name()='$LocalName']")
     if ($child) { return $child.InnerText }
     # Try XML attribute (safe method call, no StrictMode issues)
@@ -205,7 +268,7 @@ function Read-GPOReport {
     param([PSCustomObject]$Backup)
 
     try {
-        [xml]$xml = Get-Content $Backup.ReportFile -Encoding UTF8 -Raw
+        $xml = Read-XmlSafe $Backup.ReportFile
     } catch {
         Write-Log "Cannot parse '$($Backup.ReportFile)': $_" "ERROR"
         return $null
@@ -220,7 +283,7 @@ function Read-GPOReport {
     }
     if (-not $gpoName -and $Backup.BkupInfoFile) {
         try {
-            [xml]$bkup = Get-Content $Backup.BkupInfoFile -Encoding UTF8 -Raw
+            $bkup = Read-XmlSafe $Backup.BkupInfoFile
             $nameNode = $bkup.SelectSingleNode("//*[local-name()='GPODisplayName']")
             if ($nameNode) { $gpoName = $nameNode.InnerText }
         } catch { }
@@ -246,7 +309,8 @@ function Read-GPOReport {
     # All Extension nodes (Computer + User)
     $extensions = $root.SelectNodes(".//*[local-name()='Extension']")
     foreach ($ext in $extensions) {
-        $outerXml = $ext.OuterXml
+        # Cap to 2048 chars for ReDoS mitigation on regex matching
+        $outerXml = if ($ext.OuterXml.Length -gt 2048) { $ext.OuterXml.Substring(0, 2048) } else { $ext.OuterXml }
         $isUser   = Is-UserExtension -ExtNode $ext
 
         if ($outerXml -match "SystemAccess|UserRightsAssignment|EventAudit|AuditLog|SecurityOptions|RegistryValues") {
@@ -519,7 +583,7 @@ function Build-MigrationPlan {
             if ($hasPasswordSetting) {
                 $policies.Add([PSCustomObject]@{
                     PolicyType  = "Compliance Policy (Password)"
-                    PolicyName  = "$PolicyPrefix$($gpo.Name) - Password & Compliance"
+                    PolicyName  = Limit-PolicyName "$PolicyPrefix$($gpo.Name) - Password & Compliance"
                     Description = "Password requirements migrated from GPO '$($gpo.Name)'"
                     Settings    = $pp
                     Action      = "CREATE"
@@ -536,7 +600,7 @@ function Build-MigrationPlan {
             if ($hasLockoutSetting) {
                 $policies.Add([PSCustomObject]@{
                     PolicyType  = "Settings Catalog (Account Lockout)"
-                    PolicyName  = "$PolicyPrefix$($gpo.Name) - Account Lockout"
+                    PolicyName  = Limit-PolicyName "$PolicyPrefix$($gpo.Name) - Account Lockout"
                     Description = "Account lockout policy migrated from GPO '$($gpo.Name)'"
                     Settings    = $pp
                     Action      = "CREATE"
@@ -556,7 +620,7 @@ function Build-MigrationPlan {
             if ($auditEnabled) {
                 $policies.Add([PSCustomObject]@{
                     PolicyType  = "Settings Catalog (Audit Policy)"
-                    PolicyName  = "$PolicyPrefix$($gpo.Name) - Audit Policy"
+                    PolicyName  = Limit-PolicyName "$PolicyPrefix$($gpo.Name) - Audit Policy"
                     Description = "$($auditEnabled.Count) audit categorie(s) from GPO '$($gpo.Name)'"
                     Settings    = $gpo.AuditSettings
                     Action      = "CREATE"
@@ -568,17 +632,20 @@ function Build-MigrationPlan {
 
         # ── Windows Firewall ──────────────────────────────
         if ($gpo.FirewallProfiles) {
+            $domEn  = if ($null -ne $gpo.FirewallProfiles.Domain.Enabled)  { $gpo.FirewallProfiles.Domain.Enabled  } else { 'not set' }
+            $privEn = if ($null -ne $gpo.FirewallProfiles.Private.Enabled) { $gpo.FirewallProfiles.Private.Enabled } else { 'not set' }
+            $pubEn  = if ($null -ne $gpo.FirewallProfiles.Public.Enabled)  { $gpo.FirewallProfiles.Public.Enabled  } else { 'not set' }
             $policies.Add([PSCustomObject]@{
                 PolicyType  = "Endpoint Security (Firewall Profiles)"
-                PolicyName  = "$PolicyPrefix$($gpo.Name) - Firewall"
+                PolicyName  = Limit-PolicyName "$PolicyPrefix$($gpo.Name) - Firewall"
                 Description = "Firewall Domain/Private/Public profile settings from GPO '$($gpo.Name)'"
                 Settings    = $gpo.FirewallProfiles
                 Action      = "CREATE"
                 ApiType     = "firewall"
                 Details     = @(
-                    "Domain:  Enabled=$($gpo.FirewallProfiles.Domain.Enabled ?? 'not set')"
-                    "Private: Enabled=$($gpo.FirewallProfiles.Private.Enabled ?? 'not set')"
-                    "Public:  Enabled=$($gpo.FirewallProfiles.Public.Enabled ?? 'not set')"
+                    "Domain:  Enabled=$domEn"
+                    "Private: Enabled=$privEn"
+                    "Public:  Enabled=$pubEn"
                 )
             }) | Out-Null
         }
@@ -586,7 +653,7 @@ function Build-MigrationPlan {
         if ($gpo.FirewallRules.Count -gt 0) {
             $policies.Add([PSCustomObject]@{
                 PolicyType  = "Endpoint Security (Firewall Rules)"
-                PolicyName  = "$PolicyPrefix$($gpo.Name) - Firewall Rules"
+                PolicyName  = Limit-PolicyName "$PolicyPrefix$($gpo.Name) - Firewall Rules"
                 Description = "$($gpo.FirewallRules.Count) firewall rule(s) from GPO '$($gpo.Name)'"
                 Settings    = $gpo.FirewallRules
                 Action      = "CREATE"
@@ -600,7 +667,7 @@ function Build-MigrationPlan {
         if ($gpo.RegistrySettings.Count -gt 0) {
             $policies.Add([PSCustomObject]@{
                 PolicyType  = "Administrative Templates (ADMX)"
-                PolicyName  = "$PolicyPrefix$($gpo.Name) - Admin Templates"
+                PolicyName  = Limit-PolicyName "$PolicyPrefix$($gpo.Name) - Admin Templates"
                 Description = "$($gpo.RegistrySettings.Count) ADMX policy setting(s) from GPO '$($gpo.Name)'"
                 Settings    = $gpo.RegistrySettings
                 Action      = "CREATE"
@@ -614,7 +681,7 @@ function Build-MigrationPlan {
         if ($gpo.BitLockerSettings) {
             $policies.Add([PSCustomObject]@{
                 PolicyType  = "Endpoint Security (Disk Encryption / BitLocker)"
-                PolicyName  = "$PolicyPrefix$($gpo.Name) - BitLocker"
+                PolicyName  = Limit-PolicyName "$PolicyPrefix$($gpo.Name) - BitLocker"
                 Description = "BitLocker settings from GPO '$($gpo.Name)'"
                 Settings    = $gpo.BitLockerSettings
                 Action      = "PARTIAL"
@@ -627,7 +694,7 @@ function Build-MigrationPlan {
         if ($gpo.SecurityOptions.Count -gt 0) {
             $policies.Add([PSCustomObject]@{
                 PolicyType  = "Custom Profile (Security Options via OMA-URI)"
-                PolicyName  = "$PolicyPrefix$($gpo.Name) - Security Options"
+                PolicyName  = Limit-PolicyName "$PolicyPrefix$($gpo.Name) - Security Options"
                 Description = "$($gpo.SecurityOptions.Count) security option(s) from GPO '$($gpo.Name)'"
                 Settings    = $gpo.SecurityOptions
                 Action      = "PARTIAL"
@@ -640,7 +707,7 @@ function Build-MigrationPlan {
         if ($gpo.UserRights.Count -gt 0) {
             $policies.Add([PSCustomObject]@{
                 PolicyType  = "Custom Profile (User Rights via OMA-URI)"
-                PolicyName  = "$PolicyPrefix$($gpo.Name) - User Rights"
+                PolicyName  = Limit-PolicyName "$PolicyPrefix$($gpo.Name) - User Rights"
                 Description = "$($gpo.UserRights.Count) user rights assignment(s) from GPO '$($gpo.Name)'"
                 Settings    = $gpo.UserRights
                 Action      = "PARTIAL"
@@ -653,7 +720,7 @@ function Build-MigrationPlan {
         foreach ($s in $gpo.Scripts) {
             $policies.Add([PSCustomObject]@{
                 PolicyType  = "PowerShell Script"
-                PolicyName  = "$PolicyPrefix$($gpo.Name) - Script ($($s.RunOrder) / $($s.Type))"
+                PolicyName  = Limit-PolicyName "$PolicyPrefix$($gpo.Name) - Script ($($s.RunOrder) / $($s.Type))"
                 Description = "Script: $($s.Command)"
                 Settings    = $s
                 Action      = "MANUAL"
@@ -873,11 +940,11 @@ function New-FirewallProfilePolicy {
         if ($p.Enabled -match "^(true|1|yes)$") { Add-FwChoice "$($pm.Prefix)_enablefirewall" "true" }
         elseif ($p.Enabled -match "^(false|0|no)$") { Add-FwChoice "$($pm.Prefix)_enablefirewall" "false" }
 
-        if ($p.DefaultInbound -match "block|0")  { Add-FwChoice "$($pm.Prefix)_defaultinboundaction" "block" }
-        elseif ($p.DefaultInbound -match "allow|1") { Add-FwChoice "$($pm.Prefix)_defaultinboundaction" "allow" }
+        if ($p.DefaultInbound  -match "^(block|0)$")   { Add-FwChoice "$($pm.Prefix)_defaultinboundaction"  "block" }
+        elseif ($p.DefaultInbound  -match "^(allow|1)$") { Add-FwChoice "$($pm.Prefix)_defaultinboundaction"  "allow" }
 
-        if ($p.DefaultOutbound -match "block|0") { Add-FwChoice "$($pm.Prefix)_defaultoutboundaction" "block" }
-        elseif ($p.DefaultOutbound -match "allow|1") { Add-FwChoice "$($pm.Prefix)_defaultoutboundaction" "allow" }
+        if ($p.DefaultOutbound -match "^(block|0)$")   { Add-FwChoice "$($pm.Prefix)_defaultoutboundaction" "block" }
+        elseif ($p.DefaultOutbound -match "^(allow|1)$") { Add-FwChoice "$($pm.Prefix)_defaultoutboundaction" "allow" }
 
         if ($p.Notifications -match "^(true|1)$") { Add-FwChoice "$($pm.Prefix)_disablenotifications" "true" }
     }
@@ -954,9 +1021,10 @@ function New-AdmxPolicy {
     foreach ($s in $Settings) {
         if (-not $s.Name) { $missing++; continue }
         try {
-            # Search for matching definition
-            $encoded = [System.Uri]::EscapeDataString($s.Name)
-            $search  = Invoke-GGet "$GRAPH_BASE/deviceManagement/groupPolicyDefinitions?`$filter=displayName eq '$encoded'&`$top=1"
+            # Escape single quotes for OData, then URL-encode the filter expression
+            $odataSafe = $s.Name.Replace("'", "''")
+            $filter    = [System.Uri]::EscapeDataString("displayName eq '$odataSafe'")
+            $search    = Invoke-GGet "$GRAPH_BASE/deviceManagement/groupPolicyDefinitions?`$filter=$filter&`$top=1"
             if ($search.value -and $search.value.Count -gt 0) {
                 $defId = $search.value[0].id
                 $isEnabled = $s.State -ne "Disabled"
@@ -1074,14 +1142,14 @@ function New-HtmlReport {
     param([array]$Results, [array]$Plan, [string]$OutDir)
 
     $ts    = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    $fname = "GPO-Intune-Migration-$(Get-Date -Format 'yyyyMMdd-HHmm').html"
+    $fname = "GPO-Intune-Migration-$(Get-Date -Format 'yyyyMMdd-HHmmss').html"
     $fpath = Join-Path $OutDir $fname
 
     $successCount = ($Results | Where-Object Status -eq "SUCCESS").Count
     $failedCount  = ($Results | Where-Object Status -eq "FAILED").Count
     $skippedCount = ($Results | Where-Object Status -in @("SKIPPED","PARTIAL")).Count
 
-    # Build main results table
+    # Build main results table with HTML encoding
     $rows = ""
     foreach ($r in $Results) {
         $color = switch ($r.Status) {
@@ -1091,26 +1159,35 @@ function New-HtmlReport {
             "SKIPPED" { "#383d41"; $bg = "#e2e3e5" }
             default   { "#000"; $bg = "#fff" }
         }
+        $eGPO    = ConvertTo-HtmlEncode $r.GPO
+        $eType   = ConvertTo-HtmlEncode $r.PolicyType
+        $eName   = ConvertTo-HtmlEncode $r.PolicyName
+        $eStatus = ConvertTo-HtmlEncode $r.Status
+        $eId     = ConvertTo-HtmlEncode $r.IntuneId
+        $eNote   = ConvertTo-HtmlEncode $r.Note
         $rows += "<tr style='background:$bg'>
-            <td>$($r.GPO)</td>
-            <td>$($r.PolicyType)</td>
-            <td>$($r.PolicyName)</td>
-            <td style='color:$color;font-weight:600'>$($r.Status)</td>
-            <td style='font-family:monospace;font-size:0.85em'>$($r.IntuneId)</td>
-            <td>$($r.Note)</td></tr>"
+            <td>$eGPO</td>
+            <td>$eType</td>
+            <td>$eName</td>
+            <td style='color:$color;font-weight:600'>$eStatus</td>
+            <td style='font-family:monospace;font-size:0.85em'>$eId</td>
+            <td>$eNote</td></tr>"
     }
 
-    # Collect manual action items
+    # Collect manual action items with HTML encoding
     $manualSection = ""
     foreach ($item in $Plan) {
         $manualPols = $item.Policies | Where-Object { $_.Action -in @("MANUAL","PARTIAL") }
         foreach ($mp in $manualPols) {
-            $details = ($mp.Details -join "<br>")
-            $manualSection += "<tr><td>$($item.GPOName)</td><td>$($mp.PolicyType)</td><td>$($mp.PolicyName)</td><td>$details</td></tr>"
+            $eGPO    = ConvertTo-HtmlEncode $item.GPOName
+            $eMpType = ConvertTo-HtmlEncode $mp.PolicyType
+            $eMpName = ConvertTo-HtmlEncode $mp.PolicyName
+            $details = ($mp.Details | ForEach-Object { ConvertTo-HtmlEncode $_ }) -join "<br>"
+            $manualSection += "<tr><td>$eGPO</td><td>$eMpType</td><td>$eMpName</td><td>$details</td></tr>"
         }
     }
 
-    # Log table
+    # Log table with HTML encoding
     $logRows = ""
     foreach ($l in $script:Log) {
         $lc = switch ($l.Level) {
@@ -1119,7 +1196,10 @@ function New-HtmlReport {
             "ERROR"   { "#721c24" }
             default   { "#333" }
         }
-        $logRows += "<tr><td>$($l.Time)</td><td style='color:$lc;font-weight:600'>$($l.Level)</td><td>$($l.Message)</td></tr>"
+        $eTime  = ConvertTo-HtmlEncode $l.Time
+        $eLevel = ConvertTo-HtmlEncode $l.Level
+        $eMsg   = ConvertTo-HtmlEncode $l.Message
+        $logRows += "<tr><td>$eTime</td><td style='color:$lc;font-weight:600'>$eLevel</td><td>$eMsg</td></tr>"
     }
 
     $html = @"
@@ -1243,6 +1323,16 @@ if ($PlanOnly) {
     Write-Log "Plan-only mode. No changes made." "WARN"
     Write-Host "`n  Run without -PlanOnly to execute the migration.`n" -ForegroundColor Yellow
     exit 0
+}
+
+# Validate ReportPath is writable before we connect or make any changes
+try {
+    $testFile = Join-Path $ReportPath (".write-test-" + [System.Guid]::NewGuid().ToString())
+    [System.IO.File]::WriteAllText($testFile, "")
+    Remove-Item $testFile -Force
+} catch {
+    Write-Log "ReportPath '$ReportPath' is not writable: $_" "ERROR"
+    exit 1
 }
 
 # 4. Confirm
