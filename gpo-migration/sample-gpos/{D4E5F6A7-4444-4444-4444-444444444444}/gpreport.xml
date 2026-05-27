@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<GPO xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+     xmlns="http://www.microsoft.com/GroupPolicy/Settings">
+  <Identifier>
+    <Identifier xmlns="http://www.microsoft.com/GroupPolicy/Types">{D4E5F6A7-4444-4444-4444-444444444444}</Identifier>
+    <Domain xmlns="http://www.microsoft.com/GroupPolicy/Types">corp.example.com</Domain>
+  </Identifier>
+  <!-- Name contains HTML special chars: & < > " — must be encoded in the report -->
+  <Name>BitLocker &amp; Disk Encryption &lt;v2&gt;</Name>
+  <Computer>
+    <Enabled>true</Enabled>
+    <ExtensionData>
+
+      <!-- BitLocker / Disk Encryption settings -->
+      <Extension xsi:type="q1:BitLockerSettings"
+                 xmlns:q1="http://www.microsoft.com/GroupPolicy/Settings/BitLocker">
+        <q1:RequireDeviceEncryption>true</q1:RequireDeviceEncryption>
+        <q1:EncryptionMethodByDriveType>XtsAes256</q1:EncryptionMethodByDriveType>
+        <q1:RecoveryOptions>BackupToAD</q1:RecoveryOptions>
+      </Extension>
+
+      <!-- Security Options (LmCompatibilityLevel + SMB signing + UAC) -->
+      <Extension xsi:type="q2:SecuritySettings"
+                 xmlns:q2="http://www.microsoft.com/GroupPolicy/Settings/Security">
+        <q2:SecurityOptions>
+          <q2:KeyName>MACHINE\System\CurrentControlSet\Control\Lsa\LmCompatibilityLevel</q2:KeyName>
+          <q2:SettingNumber>5</q2:SettingNumber>
+        </q2:SecurityOptions>
+        <q2:SecurityOptions>
+          <q2:KeyName>MACHINE\System\CurrentControlSet\Services\LanManServer\Parameters\RequireSecuritySignature</q2:KeyName>
+          <q2:SettingNumber>1</q2:SettingNumber>
+        </q2:SecurityOptions>
+        <q2:RegistryValues>
+          <q2:RegistryValue>
+            <q2:Name>MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\EnableLUA</q2:Name>
+            <q2:Value>1</q2:Value>
+          </q2:RegistryValue>
+          <q2:RegistryValue>
+            <q2:Name>MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\ConsentPromptBehaviorAdmin</q2:Name>
+            <q2:Value>2</q2:Value>
+          </q2:RegistryValue>
+        </q2:RegistryValues>
+      </Extension>
+
+      <!-- Startup script alongside BitLocker -->
+      <Extension xsi:type="q3:ScriptsSettings"
+                 xmlns:q3="http://www.microsoft.com/GroupPolicy/Settings/Scripts">
+        <q3:Script>
+          <q3:Command>\\corp.example.com\netlogon\enable-bitlocker.ps1</q3:Command>
+          <q3:Parameters>-RecoveryKeyPath "\\fileserver\bitlocker-keys"</q3:Parameters>
+          <q3:RunOrder>Startup</q3:RunOrder>
+        </q3:Script>
+      </Extension>
+
+    </ExtensionData>
+  </Computer>
+  <User>
+    <Enabled>false</Enabled>
+    <ExtensionData />
+  </User>
+</GPO>

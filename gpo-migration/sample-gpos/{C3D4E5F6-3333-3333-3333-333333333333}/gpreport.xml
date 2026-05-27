@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<GPO xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+     xmlns="http://www.microsoft.com/GroupPolicy/Settings">
+  <Identifier>
+    <Identifier xmlns="http://www.microsoft.com/GroupPolicy/Types">{C3D4E5F6-3333-3333-3333-333333333333}</Identifier>
+    <Domain xmlns="http://www.microsoft.com/GroupPolicy/Types">corp.example.com</Domain>
+  </Identifier>
+  <Name>OS Hardening - ADMX Policies</Name>
+  <Computer>
+    <Enabled>true</Enabled>
+    <ExtensionData>
+      <Extension xsi:type="q3:RegistrySettings" xmlns:q3="http://www.microsoft.com/GroupPolicy/Settings/Registry">
+        <q3:Policy>
+          <q3:Name>Turn off AutoPlay</q3:Name>
+          <q3:State>Enabled</q3:State>
+          <q3:Category>Windows Components/AutoPlay Policies</q3:Category>
+          <q3:KeyName>HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer</q3:KeyName>
+          <q3:ValueName>NoDriveTypeAutoRun</q3:ValueName>
+        </q3:Policy>
+        <q3:Policy>
+          <q3:Name>Configure Windows SmartScreen</q3:Name>
+          <q3:State>Enabled</q3:State>
+          <q3:Category>Windows Components/File Explorer</q3:Category>
+          <q3:KeyName>HKLM\SOFTWARE\Policies\Microsoft\Windows\System</q3:KeyName>
+          <q3:ValueName>EnableSmartScreen</q3:ValueName>
+        </q3:Policy>
+        <q3:Policy>
+          <q3:Name>Do not display 'Install Updates and Shut Down' option in Shut Down Windows dialog box</q3:Name>
+          <q3:State>Disabled</q3:State>
+          <q3:Category>Windows Components/Windows Update</q3:Category>
+          <q3:KeyName>HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU</q3:KeyName>
+          <q3:ValueName>NoAUShutdownOption</q3:ValueName>
+        </q3:Policy>
+        <q3:Policy>
+          <q3:Name>Require trusted path for credential entry</q3:Name>
+          <q3:State>Enabled</q3:State>
+          <q3:Category>System/Logon</q3:Category>
+          <q3:KeyName>HKLM\SOFTWARE\Policies\Microsoft\Windows\CredentialsDelegation</q3:KeyName>
+          <q3:ValueName>AllowProtectedCreds</q3:ValueName>
+        </q3:Policy>
+      </Extension>
+      <Extension xsi:type="q4:ScriptsSettings" xmlns:q4="http://www.microsoft.com/GroupPolicy/Settings/Scripts">
+        <q4:Script>
+          <q4:Command>\\corp.example.com\netlogon\startup-hardening.ps1</q4:Command>
+          <q4:Parameters>-Silent</q4:Parameters>
+          <q4:RunOrder>Startup</q4:RunOrder>
+        </q4:Script>
+      </Extension>
+    </ExtensionData>
+  </Computer>
+  <User>
+    <Enabled>true</Enabled>
+    <ExtensionData>
+      <Extension xsi:type="q3:RegistrySettings" xmlns:q3="http://www.microsoft.com/GroupPolicy/Settings/Registry">
+        <q3:Policy>
+          <q3:Name>Prevent access to registry editing tools</q3:Name>
+          <q3:State>Enabled</q3:State>
+          <q3:Category>System</q3:Category>
+          <q3:KeyName>HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System</q3:KeyName>
+          <q3:ValueName>DisableRegistryTools</q3:ValueName>
+        </q3:Policy>
+      </Extension>
+    </ExtensionData>
+  </User>
+</GPO>

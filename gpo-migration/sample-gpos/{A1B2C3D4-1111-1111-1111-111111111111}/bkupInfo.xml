@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<BackupInst xmlns="http://www.microsoft.com/GroupPolicy/GPOOperations/Manifest">
+  <GPOGuid>{A1B2C3D4-1111-1111-1111-111111111111}</GPOGuid>
+  <GPODomain>corp.example.com</GPODomain>
+  <GPODomainDN>DC=corp,DC=example,DC=com</GPODomainDN>
+  <BackupTime>2025-04-10T09:00:00</BackupTime>
+  <ID>{A1B2C3D4-1111-1111-1111-111111111111}</ID>
+  <Comment>Pre-migration backup</Comment>
+  <GPODisplayName>Workstation Security Baseline</GPODisplayName>
+</BackupInst>

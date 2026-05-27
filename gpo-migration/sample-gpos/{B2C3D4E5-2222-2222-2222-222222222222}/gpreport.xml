@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<GPO xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+     xmlns="http://www.microsoft.com/GroupPolicy/Settings">
+  <Identifier>
+    <Identifier xmlns="http://www.microsoft.com/GroupPolicy/Types">{B2C3D4E5-2222-2222-2222-222222222222}</Identifier>
+    <Domain xmlns="http://www.microsoft.com/GroupPolicy/Types">corp.example.com</Domain>
+  </Identifier>
+  <Name>Windows Firewall Policy</Name>
+  <Computer>
+    <Enabled>true</Enabled>
+    <ExtensionData>
+      <Extension xsi:type="q2:WindowsFirewallSettings" xmlns:q2="http://www.microsoft.com/GroupPolicy/Settings/WindowsFirewall">
+        <q2:DomainProfile>
+          <q2:EnableFirewall>true</q2:EnableFirewall>
+          <q2:DefaultInboundAction>Block</q2:DefaultInboundAction>
+          <q2:DefaultOutboundAction>Allow</q2:DefaultOutboundAction>
+          <q2:DisableNotifications>false</q2:DisableNotifications>
+        </q2:DomainProfile>
+        <q2:PrivateProfile>
+          <q2:EnableFirewall>true</q2:EnableFirewall>
+          <q2:DefaultInboundAction>Block</q2:DefaultInboundAction>
+          <q2:DefaultOutboundAction>Allow</q2:DefaultOutboundAction>
+          <q2:DisableNotifications>false</q2:DisableNotifications>
+        </q2:PrivateProfile>
+        <q2:PublicProfile>
+          <q2:EnableFirewall>true</q2:EnableFirewall>
+          <q2:DefaultInboundAction>Block</q2:DefaultInboundAction>
+          <q2:DefaultOutboundAction>Block</q2:DefaultOutboundAction>
+          <q2:DisableNotifications>true</q2:DisableNotifications>
+        </q2:PublicProfile>
+        <q2:GlobalSettings>
+          <q2:PolicyVersion>543</q2:PolicyVersion>
+        </q2:GlobalSettings>
+        <q2:FirewallRule>
+          <q2:Name>Remote Desktop - User Mode (TCP-In)</q2:Name>
+          <q2:Desc>Inbound rule for Remote Desktop services</q2:Desc>
+          <q2:Enabled>true</q2:Enabled>
+          <q2:Action>Allow</q2:Action>
+          <q2:Dir>In</q2:Dir>
+          <q2:Protocol>6</q2:Protocol>
+          <q2:LPort>3389</q2:LPort>
+          <q2:Profile>Domain</q2:Profile>
+        </q2:FirewallRule>
+        <q2:FirewallRule>
+          <q2:Name>Block Telnet Outbound</q2:Name>
+          <q2:Desc>Block outbound Telnet</q2:Desc>
+          <q2:Enabled>true</q2:Enabled>
+          <q2:Action>Block</q2:Action>
+          <q2:Dir>Out</q2:Dir>
+          <q2:Protocol>6</q2:Protocol>
+          <q2:RPort>23</q2:RPort>
+          <q2:Profile>Any</q2:Profile>
+        </q2:FirewallRule>
+        <q2:FirewallRule>
+          <q2:Name>Allow ICMP Echo</q2:Name>
+          <q2:Desc>Allow ping from domain network</q2:Desc>
+          <q2:Enabled>true</q2:Enabled>
+          <q2:Action>Allow</q2:Action>
+          <q2:Dir>In</q2:Dir>
+          <q2:Protocol>1</q2:Protocol>
+          <q2:Profile>Domain</q2:Profile>
+        </q2:FirewallRule>
+      </Extension>
+    </ExtensionData>
+  </Computer>
+  <User>
+    <Enabled>false</Enabled>
+    <ExtensionData />
+  </User>
+</GPO>

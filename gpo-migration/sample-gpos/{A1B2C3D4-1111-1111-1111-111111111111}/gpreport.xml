@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<GPO xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+     xmlns="http://www.microsoft.com/GroupPolicy/Settings">
+  <Identifier>
+    <Identifier xmlns="http://www.microsoft.com/GroupPolicy/Types">{A1B2C3D4-1111-1111-1111-111111111111}</Identifier>
+    <Domain xmlns="http://www.microsoft.com/GroupPolicy/Types">corp.example.com</Domain>
+  </Identifier>
+  <Name>Workstation Security Baseline</Name>
+  <Computer>
+    <Enabled>true</Enabled>
+    <ExtensionData>
+      <Extension xsi:type="q1:SecuritySettings" xmlns:q1="http://www.microsoft.com/GroupPolicy/Settings/Security">
+        <q1:SystemAccess>
+          <q1:MinimumPasswordAge>1</q1:MinimumPasswordAge>
+          <q1:MaximumPasswordAge>90</q1:MaximumPasswordAge>
+          <q1:MinimumPasswordLength>12</q1:MinimumPasswordLength>
+          <q1:PasswordComplexity>1</q1:PasswordComplexity>
+          <q1:PasswordHistorySize>24</q1:PasswordHistorySize>
+          <q1:LockoutBadCount>5</q1:LockoutBadCount>
+          <q1:ResetLockoutCount>30</q1:ResetLockoutCount>
+          <q1:LockoutDuration>30</q1:LockoutDuration>
+          <q1:ClearTextPassword>0</q1:ClearTextPassword>
+        </q1:SystemAccess>
+        <q1:EventAudit>
+          <q1:AuditSystemEvents>3</q1:AuditSystemEvents>
+          <q1:AuditLogonEvents>3</q1:AuditLogonEvents>
+          <q1:AuditObjectAccess>2</q1:AuditObjectAccess>
+          <q1:AuditPrivilegeUse>1</q1:AuditPrivilegeUse>
+          <q1:AuditPolicyChange>3</q1:AuditPolicyChange>
+          <q1:AuditAccountManage>3</q1:AuditAccountManage>
+          <q1:AuditProcessTracking>0</q1:AuditProcessTracking>
+          <q1:AuditDSAccess>0</q1:AuditDSAccess>
+          <q1:AuditAccountLogon>3</q1:AuditAccountLogon>
+        </q1:EventAudit>
+        <q1:UserRightsAssignment>
+          <q1:Name>SeDenyNetworkLogonRight</q1:Name>
+          <q1:Member>
+            <q1:Name>Guests</q1:Name>
+          </q1:Member>
+          <q1:Member>
+            <q1:Name>LOCAL SERVICE</q1:Name>
+          </q1:Member>
+        </q1:UserRightsAssignment>
+        <q1:UserRightsAssignment>
+          <q1:Name>SeRemoteInteractiveLogonRight</q1:Name>
+          <q1:Member>
+            <q1:Name>Administrators</q1:Name>
+          </q1:Member>
+          <q1:Member>
+            <q1:Name>Remote Desktop Users</q1:Name>
+          </q1:Member>
+        </q1:UserRightsAssignment>
+        <q1:SecurityOptions>
+          <q1:KeyName>MACHINE\System\CurrentControlSet\Control\Lsa\LmCompatibilityLevel</q1:KeyName>
+          <q1:SettingNumber>5</q1:SettingNumber>
+        </q1:SecurityOptions>
+        <q1:SecurityOptions>
+          <q1:KeyName>MACHINE\System\CurrentControlSet\Control\Lsa\NoLMHash</q1:KeyName>
+          <q1:SettingNumber>1</q1:SettingNumber>
+        </q1:SecurityOptions>
+        <q1:SecurityOptions>
+          <q1:KeyName>MACHINE\System\CurrentControlSet\Services\LanmanWorkstation\Parameters\RequireSecuritySignature</q1:KeyName>
+          <q1:SettingNumber>1</q1:SettingNumber>
+        </q1:SecurityOptions>
+      </Extension>
+    </ExtensionData>
+  </Computer>
+  <User>
+    <Enabled>false</Enabled>
+    <ExtensionData />
+  </User>
+</GPO>
