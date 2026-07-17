@@ -53,7 +53,7 @@ param(
     [string]$KB = "KB5101650",
 
     [Parameter(Mandatory = $false)]
-    [string]$LogPath = "$env:SystemRoot\Logs\Uninstall-KB5101650.log",
+    [string]$LogPath = "",
 
     [Parameter(Mandatory = $false)]
     [switch]$NoRestart = $true
@@ -85,6 +85,18 @@ if (-not $IsSCCM -and -not $IsIntune) {
     $IsLocal = $true
 }
 
+# Determinar la ruta de log per defecte segons el context
+if (-not $LogPath) {
+    # Comprovar si tenim permisos d'administrador per ruta protegida
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if ($isAdmin) {
+        $LogPath = "$env:SystemRoot\Logs\Uninstall-KB5101650.log"
+    } else {
+        # Sense admin: usar TEMP (SCCM/Intune sempre executen com a SYSTEM = admin)
+        $LogPath = "$env:TEMP\Uninstall-KB5101650.log"
+    }
+}
+
 # Assegurar que el directori de log existeix
 $LogDir = Split-Path -Path $LogPath -Parent
 try {
@@ -101,6 +113,7 @@ try {
 }
 
 # Funció de logging dual (consola + fitxer)
+$script:FileLogFailed = $false
 function Write-TSLog {
     [CmdletBinding()]
     param(
@@ -123,10 +136,13 @@ function Write-TSLog {
         default   { Write-Host $logLine }
     }
 
-    try {
-        Add-Content -Path $LogPath -Value $logLine -Encoding UTF8 -ErrorAction Stop
-    } catch {
-        Write-Warning "No s'ha pogut escriure al fitxer de log: $_"
+    if (-not $script:FileLogFailed) {
+        try {
+            Add-Content -Path $LogPath -Value $logLine -Encoding UTF8 -ErrorAction Stop
+        } catch {
+            Write-Warning "No s'ha pogut escriure al fitxer de log ($LogPath). La resta de logs només es mostraran per consola."
+            $script:FileLogFailed = $true
+        }
     }
 }
 
@@ -335,26 +351,36 @@ function Get-UpdateStatus {
         try {
             Write-TSLog "InstallTime: Buscant paquets instal·lats prop de $($result.InstalledOn)..." -Level "DEBUG"
             $allPkgs = Get-WindowsPackage -Online -ErrorAction Stop
-            $bestMatch = $null
-            $bestDiffMinutes = 99999
+            $candidates = @()
 
             foreach ($pkg in $allPkgs) {
                 if ($pkg.InstallTime -and $pkg.ReleaseType -in @('Update', 'Security Update', 'SecurityUpdate', 'Hotfix', 'UpdateEx')) {
                     $diff = [Math]::Abs(($pkg.InstallTime - $result.InstalledOn).TotalMinutes)
                     $sameDay = ($pkg.InstallTime.Date -eq $result.InstalledOn.Date)
-                    if (($diff -lt 1500 -or $sameDay) -and $diff -lt $bestDiffMinutes) {
-                        $bestMatch = $pkg
-                        $bestDiffMinutes = $diff
+                    if ($diff -lt 1500 -or $sameDay) {
+                        $candidates += [PSCustomObject]@{
+                            Package     = $pkg
+                            DiffMinutes = $diff
+                            SameDay     = $sameDay
+                            IsRollup    = ($pkg.PackageName -match "RollupFix")
+                            IsSxS       = ($pkg.PackageName -match "ServicingStack")
+                        }
                     }
                 }
             }
 
-            if ($bestMatch) {
-                $result.PackageName = $bestMatch.PackageName
-                Write-TSLog "InstallTime: Trobat! $($bestMatch.PackageName) (diff=$([math]::Round($bestDiffMinutes,1)) min, ReleaseType=$($bestMatch.ReleaseType))" -Level "SUCCESS"
-                $result.Details += "InstallTime match: $($bestMatch.PackageName) | diff=$([math]::Round($bestDiffMinutes,1)) min | ReleaseType=$($bestMatch.ReleaseType)"
+            # Ordenar: excloure ServicingStack, preferir RollupFix, mateix dia, més proper
+            $bestCandidate = $candidates |
+                Where-Object { -not $_.IsSxS } |
+                Sort-Object { -not $_.IsRollup }, { -not $_.SameDay }, DiffMinutes |
+                Select-Object -First 1
+
+            if ($bestCandidate) {
+                $result.PackageName = $bestCandidate.Package.PackageName
+                Write-TSLog "InstallTime: Trobat! $($bestCandidate.Package.PackageName) (diff=$([math]::Round($bestCandidate.DiffMinutes,1)) min, ReleaseType=$($bestCandidate.Package.ReleaseType), Rollup=$($bestCandidate.IsRollup))" -Level "SUCCESS"
+                $result.Details += "InstallTime match: $($bestCandidate.Package.PackageName) | diff=$([math]::Round($bestCandidate.DiffMinutes,1)) min | ReleaseType=$($bestCandidate.Package.ReleaseType)"
             } else {
-                Write-TSLog "InstallTime: No s'ha trobat cap paquet dins d'una finestra de 25 hores ni al mateix dia" -Level "WARN"
+                Write-TSLog "InstallTime: No s'ha trobat cap paquet dins d'una finestra de 25 hores ni al mateix dia (excloent ServicingStack)" -Level "WARN"
                 # Debug: mostrar paquets recents
                 $recentPkgs = $allPkgs | Where-Object { $_.InstallTime } | Sort-Object InstallTime -Descending | Select-Object -First 10
                 foreach ($rp in $recentPkgs) {
@@ -707,23 +733,32 @@ if (-not $removalSuccess) {
             Write-TSLog "InstallTime runtime: Buscant paquets propers a $($updateStatus.InstalledOn)..." -Level "INFO"
             try {
                 $allPkgs = Get-WindowsPackage -Online -ErrorAction Stop
-                $bestMatch = $null
-                $bestDiff = 99999
+                $candidates = @()
 
                 foreach ($pkg in $allPkgs) {
                     if ($pkg.InstallTime -and $pkg.ReleaseType -in @('Update', 'Security Update', 'SecurityUpdate', 'Hotfix', 'UpdateEx')) {
                         $diff = [Math]::Abs(($pkg.InstallTime - $updateStatus.InstalledOn).TotalMinutes)
                         $sameDay = ($pkg.InstallTime.Date -eq $updateStatus.InstalledOn.Date)
-                        if (($diff -lt 1500 -or $sameDay) -and $diff -lt $bestDiff) {
-                            $bestMatch = $pkg
-                            $bestDiff = $diff
+                        if ($diff -lt 1500 -or $sameDay) {
+                            $candidates += [PSCustomObject]@{
+                                Package     = $pkg
+                                DiffMinutes = $diff
+                                SameDay     = $sameDay
+                                IsRollup    = ($pkg.PackageName -match "RollupFix")
+                                IsSxS       = ($pkg.PackageName -match "ServicingStack")
+                            }
                         }
                     }
                 }
 
-                if ($bestMatch) {
-                    Write-TSLog "InstallTime runtime: Trobat! $($bestMatch.PackageName) (diff=$([math]::Round($bestDiff,1)) min)" -Level "SUCCESS"
-                    $removalSuccess = Remove-UpdateViaDISM -PackageName $bestMatch.PackageName
+                $bestCandidate = $candidates |
+                    Where-Object { -not $_.IsSxS } |
+                    Sort-Object { -not $_.IsRollup }, { -not $_.SameDay }, DiffMinutes |
+                    Select-Object -First 1
+
+                if ($bestCandidate) {
+                    Write-TSLog "InstallTime runtime: Trobat! $($bestCandidate.Package.PackageName) (diff=$([math]::Round($bestCandidate.DiffMinutes,1)) min, Rollup=$($bestCandidate.IsRollup))" -Level "SUCCESS"
+                    $removalSuccess = Remove-UpdateViaDISM -PackageName $bestCandidate.Package.PackageName
                     $packageFound = $true
                 } else {
                     Write-TSLog "InstallTime runtime: No s'ha trobat cap paquet dins de +/-2h" -Level "WARN"
