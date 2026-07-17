@@ -339,9 +339,10 @@ function Get-UpdateStatus {
             $bestDiffMinutes = 99999
 
             foreach ($pkg in $allPkgs) {
-                if ($pkg.InstallTime -and $pkg.ReleaseType -in @('Update', 'Security Update', 'Hotfix', 'UpdateEx')) {
+                if ($pkg.InstallTime -and $pkg.ReleaseType -in @('Update', 'Security Update', 'SecurityUpdate', 'Hotfix', 'UpdateEx')) {
                     $diff = [Math]::Abs(($pkg.InstallTime - $result.InstalledOn).TotalMinutes)
-                    if ($diff -lt 120 -and $diff -lt $bestDiffMinutes) {
+                    $sameDay = ($pkg.InstallTime.Date -eq $result.InstalledOn.Date)
+                    if (($diff -lt 1500 -or $sameDay) -and $diff -lt $bestDiffMinutes) {
                         $bestMatch = $pkg
                         $bestDiffMinutes = $diff
                     }
@@ -353,7 +354,7 @@ function Get-UpdateStatus {
                 Write-TSLog "InstallTime: Trobat! $($bestMatch.PackageName) (diff=$([math]::Round($bestDiffMinutes,1)) min, ReleaseType=$($bestMatch.ReleaseType))" -Level "SUCCESS"
                 $result.Details += "InstallTime match: $($bestMatch.PackageName) | diff=$([math]::Round($bestDiffMinutes,1)) min | ReleaseType=$($bestMatch.ReleaseType)"
             } else {
-                Write-TSLog "InstallTime: No s'ha trobat cap paquet dins d'una finestra de 2 hores" -Level "WARN"
+                Write-TSLog "InstallTime: No s'ha trobat cap paquet dins d'una finestra de 25 hores ni al mateix dia" -Level "WARN"
                 # Debug: mostrar paquets recents
                 $recentPkgs = $allPkgs | Where-Object { $_.InstallTime } | Sort-Object InstallTime -Descending | Select-Object -First 10
                 foreach ($rp in $recentPkgs) {
@@ -423,27 +424,22 @@ function Remove-UpdateViaWUSA {
     param([string]$KB)
 
     $kbNum = $KB -replace '[^0-9]', ''
-    $wusaArgs = @(
-        "/uninstall",
-        "/kb:$kbNum",
-        "/quiet",
-        "/norestart"
-    )
 
-    Write-TSLog "Intentant desinstal·lar via wusa.exe: wusa.exe $($wusaArgs -join ' ')" -Level "INFO"
+    # Intent 1: wusa.exe amb /quiet /norestart
+    $wusaArgs1 = @("/uninstall", "/kb:$kbNum", "/quiet", "/norestart")
+    Write-TSLog "Intentant desinstal·lar via wusa.exe: wusa.exe $($wusaArgs1 -join ' ')" -Level "INFO"
 
     try {
-        $proc = Start-Process -FilePath "wusa.exe" -ArgumentList $wusaArgs -Wait -NoNewWindow -PassThru
+        $proc = Start-Process -FilePath "wusa.exe" -ArgumentList $wusaArgs1 -Wait -NoNewWindow -PassThru
         $exitCode = $proc.ExitCode
-
         Write-TSLog "wusa.exe ha sortit amb codi: $exitCode" -Level "INFO"
 
-        # wusa.exe exit codes:
-        # 0           = Success (no reboot needed)
-        # 3010        = Success (reboot required)
-        # -1 / any+   = Error
-        # 2359302     = Update not installed
-        # -2145124329 = Update already uninstalled
+        $knownCodes = @{
+            0       = "Desinstal·lat correctament"
+            3010    = "Desinstal·lat, cal reiniciar"
+            87      = "ERROR_INVALID_PARAMETER — wusa.exe no suporta aquest tipus d'update; es farà fallback a DISM"
+            2359302 = "Update no instal·lat"
+        }
 
         switch ($exitCode) {
             0 {
@@ -454,6 +450,10 @@ function Remove-UpdateViaWUSA {
                 Write-TSLog "wusa.exe: KB $KB desinstal·lat. Cal reiniciar." -Level "SUCCESS"
                 $script:RebootRequired = $true
                 return $true
+            }
+            87 {
+                Write-TSLog "wusa.exe: Exit 87 - L'update no es pot desinstal·lar via wusa (possiblement paquet acumulatiu o pending). Continuant amb DISM..." -Level "WARN"
+                return $false
             }
             2359302 {
                 Write-TSLog "wusa.exe: KB $KB no està instal·lat en aquest equip" -Level "INFO"
@@ -711,9 +711,10 @@ if (-not $removalSuccess) {
                 $bestDiff = 99999
 
                 foreach ($pkg in $allPkgs) {
-                    if ($pkg.InstallTime -and $pkg.ReleaseType -in @('Update', 'Security Update', 'Hotfix', 'UpdateEx')) {
+                    if ($pkg.InstallTime -and $pkg.ReleaseType -in @('Update', 'Security Update', 'SecurityUpdate', 'Hotfix', 'UpdateEx')) {
                         $diff = [Math]::Abs(($pkg.InstallTime - $updateStatus.InstalledOn).TotalMinutes)
-                        if ($diff -lt 120 -and $diff -lt $bestDiff) {
+                        $sameDay = ($pkg.InstallTime.Date -eq $updateStatus.InstalledOn.Date)
+                        if (($diff -lt 1500 -or $sameDay) -and $diff -lt $bestDiff) {
                             $bestMatch = $pkg
                             $bestDiff = $diff
                         }
