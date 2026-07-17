@@ -144,7 +144,7 @@ function Test-IsAdministrator {
 function Get-UpdateStatus {
     <#
     .SYNOPSIS
-        Detecta si el KB està instal·lat i en quin estat es troba.
+        Detecta si el KB esta instal·lat i en quin estat es troba.
         Retorna un objecte amb les propietats IsInstalled, IsPending, PackageName, DetectMethod.
     #>
     [CmdletBinding()]
@@ -173,7 +173,7 @@ function Get-UpdateStatus {
         Write-TSLog "Get-HotFix: KB $KB no detectat per aquesta via" -Level "DEBUG"
     }
 
-    # Mètode 2: DISM Get-WindowsPackage
+    # Mètode 2: DISM Get-WindowsPackage (direct name match)
     try {
         $dismPkgs = Get-WindowsPackage -Online -ErrorAction Stop |
             Where-Object { $_.PackageName -like "*$($KB_Numeric)*" -or
@@ -181,9 +181,8 @@ function Get-UpdateStatus {
 
         if ($dismPkgs) {
             foreach ($pkg in $dismPkgs) {
-                Write-TSLog "DISM: $($pkg.PackageName) | State=$($pkg.PackageState) | ReleaseType=$($pkg.ReleaseType) | InstallTime=$($pkg.InstallTime)" -Level "DEBUG"
-
-                $result.Details += "DISM: $($pkg.PackageName) | State=$($pkg.PackageState) | ReleaseType=$($pkg.ReleaseType) | InstallTime=$($pkg.InstallTime)"
+                Write-TSLog "DISM direct: $($pkg.PackageName) | State=$($pkg.PackageState) | ReleaseType=$($pkg.ReleaseType) | InstallTime=$($pkg.InstallTime)" -Level "DEBUG"
+                $result.Details += "DISM direct: $($pkg.PackageName) | State=$($pkg.PackageState)"
 
                 switch ($pkg.PackageState) {
                     "Installed"        {
@@ -214,54 +213,41 @@ function Get-UpdateStatus {
             }
             if (-not $result.DetectMethod) { $result.DetectMethod = "DISM" }
         } else {
-            Write-TSLog "DISM: Cap paquet amb nom coincident amb $KB_Numeric" -Level "DEBUG"
+            Write-TSLog "DISM direct: Cap paquet amb nom coincident amb $KB_Numeric" -Level "DEBUG"
         }
     } catch {
         Write-TSLog "DISM Get-WindowsPackage ha fallat: $_" -Level "WARN"
     }
 
-    # Mètode 3: DISM.exe com a fallback
-    if (-not $dismPkgs) {
-        try {
-            $dismExeOutput = & dism.exe /online /get-packages /format:list /english 2>&1
-            $packageBlock  = $null
-            $captureBlock  = $false
+    # Mètode 3: DISM.exe /format:list amb scanning complet de tots els camps
+    Write-TSLog "DISM.exe: Escanejant tots els paquets (pot trigar uns segons)..." -Level "DEBUG"
+    try {
+        $dismExeOutput = & dism.exe /online /get-packages /format:list /english 2>&1
+        $packageBlock  = $null
+        $captureBlock  = $false
+        $lastBlockProcessed = $false
 
-            foreach ($line in $dismExeOutput) {
-                if ($line -match "Package Identity") {
-                    if ($captureBlock -and $packageBlock -match $KB_Numeric) {
-                        $captureBlock = $false
-                        if ($packageBlock -match "Package Identity : (.+)") {
-                            $result.PackageName = $Matches[1].Trim()
-                            $result.IsInstalled = $true
-                            if (-not $result.DetectMethod) { $result.DetectMethod = "DISM.exe" }
-                            $result.Details += "DISM.exe: $($Matches[1].Trim())"
-                            Write-TSLog "DISM.exe: Trobat $($Matches[1].Trim())" -Level "INFO"
-                        }
-                    }
-                    $packageBlock = $line
-                    $captureBlock = $true
-                } elseif ($captureBlock) {
-                    $packageBlock += "`n$line"
-                    if ($line -match "State : (.+)") {
-                        $state = $Matches[1].Trim()
-                        Write-TSLog "DISM.exe: Package state = $state" -Level "DEBUG"
-                        if ($state -match "Install Pending|Staged") {
-                            $result.IsPending = $true
-                        }
-                    }
-                    if ($line -match "Release Type : (.+)") {
-                        $relType = $Matches[1].Trim()
-                        Write-TSLog "DISM.exe: Release type = $relType" -Level "DEBUG"
-                    }
+        foreach ($line in $dismExeOutput) {
+            if ($line -match "Package Identity") {
+                # Processem el bloc anterior abans de començar-ne un de nou
+                if ($captureBlock -and $packageBlock) {
+                    _Process-DismBlock -Block $packageBlock -KB $KB -KB_Numeric $KB_Numeric -Result $result
                 }
+                $packageBlock = $line
+                $captureBlock = $true
+            } elseif ($captureBlock) {
+                $packageBlock += "`n$line"
             }
-        } catch {
-            Write-TSLog "DISM.exe ha fallat: $_" -Level "WARN"
         }
+        # Processar l'últim bloc capturat (aquest és el fix clau)
+        if ($captureBlock -and $packageBlock) {
+            _Process-DismBlock -Block $packageBlock -KB $KB -KB_Numeric $KB_Numeric -Result $result
+        }
+    } catch {
+        Write-TSLog "DISM.exe ha fallat: $_" -Level "WARN"
     }
 
-    # Mètode 4: Comprovar pending.xml (pendent de reinici després d'instal·lació)
+    # Mètode 4: Comprovar pending.xml (pendent de reinici)
     $pendingXmlPath = "$env:SystemRoot\WinSxS\pending.xml"
     if (Test-Path -Path $pendingXmlPath) {
         try {
@@ -284,7 +270,7 @@ function Get-UpdateStatus {
         }
     }
 
-    # Mètode 5: CBS Registry (Component Based Servicing)
+    # Mètode 5: CBS Registry (Component Based Servicing) — PSChildName matching
     $cbsRegPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\Packages"
     if (Test-Path -Path $cbsRegPath) {
         try {
@@ -293,13 +279,14 @@ function Get-UpdateStatus {
                 Select-Object -First 5
 
             if ($cbsPkgs) {
-                Write-TSLog "CBS Registry: Trobats $($cbsPkgs.Count) registres per KB $KB" -Level "DEBUG"
+                Write-TSLog "CBS PSChildName: Trobats $($cbsPkgs.Count) registres per KB $KB" -Level "DEBUG"
                 foreach ($cbs in $cbsPkgs) {
                     $props = Get-ItemProperty -Path $cbs.PSPath -ErrorAction SilentlyContinue
                     $installState = $props.CurrentState
-                    $result.Details += "CBS: $($cbs.PSChildName) | CurrentState=$installState"
-                    Write-TSLog "CBS: $($cbs.PSChildName) | CurrentState=$installState" -Level "DEBUG"
+                    $result.Details += "CBS PSChildName: $($cbs.PSChildName) | CurrentState=$installState"
+                    Write-TSLog "CBS PSChildName: $($cbs.PSChildName) | CurrentState=$installState" -Level "DEBUG"
 
+                    if (-not $result.PackageName) { $result.PackageName = $cbs.PSChildName }
                     if ($installState -in @(0x40, 0x50, 0x70)) {
                         $result.IsInstalled = $true
                         if (-not $result.DetectMethod) { $result.DetectMethod = "CBS Registry" }
@@ -311,9 +298,115 @@ function Get-UpdateStatus {
         } catch {
             Write-TSLog "Error al llegir CBS Registry: $_" -Level "DEBUG"
         }
+
+        # Mètode 5b: CBS Registry per InstallName (clau per quan el KB no surt al PSChildName)
+        if ($result.IsInstalled -and -not $result.PackageName) {
+            try {
+                Write-TSLog "CBS: Buscant per InstallName='$KB' als registres CBS..." -Level "DEBUG"
+                $allCbsKeys = Get-ChildItem -Path $cbsRegPath -ErrorAction Stop
+                $foundInCbsInstallName = $false
+                foreach ($cbsKey in $allCbsKeys) {
+                    try {
+                        $installName = (Get-ItemProperty -Path $cbsKey.PSPath -Name "InstallName" -ErrorAction SilentlyContinue).InstallName
+                        if ($installName -eq $KB -or $installName -eq $KB_Numeric) {
+                            $result.PackageName = $cbsKey.PSChildName
+                            $result.IsInstalled = $true
+                            if (-not $result.DetectMethod) { $result.DetectMethod = "CBS InstallName" }
+                            $result.Details += "CBS InstallName: $($cbsKey.PSChildName) -> $installName"
+                            Write-TSLog "CBS InstallName: Trobat! $($cbsKey.PSChildName) -> $installName" -Level "SUCCESS"
+                            $foundInCbsInstallName = $true
+                            break
+                        }
+                    } catch {
+                        # Alguns claus no tenen InstallName, ignorar
+                    }
+                }
+                if (-not $foundInCbsInstallName) {
+                    Write-TSLog "CBS InstallName: No s'ha trobat cap clau amb InstallName=$KB" -Level "DEBUG"
+                }
+            } catch {
+                Write-TSLog "CBS InstallName search error: $_" -Level "DEBUG"
+            }
+        }
+    }
+
+    # Mètode 6: Correlació per InstallTime (fallback final)
+    if ($result.IsInstalled -and -not $result.PackageName -and $result.InstalledOn) {
+        try {
+            Write-TSLog "InstallTime: Buscant paquets instal·lats prop de $($result.InstalledOn)..." -Level "DEBUG"
+            $allPkgs = Get-WindowsPackage -Online -ErrorAction Stop
+            $bestMatch = $null
+            $bestDiffMinutes = 99999
+
+            foreach ($pkg in $allPkgs) {
+                if ($pkg.InstallTime -and $pkg.ReleaseType -in @('Update', 'Security Update', 'Hotfix', 'UpdateEx')) {
+                    $diff = [Math]::Abs(($pkg.InstallTime - $result.InstalledOn).TotalMinutes)
+                    if ($diff -lt 120 -and $diff -lt $bestDiffMinutes) {
+                        $bestMatch = $pkg
+                        $bestDiffMinutes = $diff
+                    }
+                }
+            }
+
+            if ($bestMatch) {
+                $result.PackageName = $bestMatch.PackageName
+                Write-TSLog "InstallTime: Trobat! $($bestMatch.PackageName) (diff=$([math]::Round($bestDiffMinutes,1)) min, ReleaseType=$($bestMatch.ReleaseType))" -Level "SUCCESS"
+                $result.Details += "InstallTime match: $($bestMatch.PackageName) | diff=$([math]::Round($bestDiffMinutes,1)) min | ReleaseType=$($bestMatch.ReleaseType)"
+            } else {
+                Write-TSLog "InstallTime: No s'ha trobat cap paquet dins d'una finestra de 2 hores" -Level "WARN"
+                # Debug: mostrar paquets recents
+                $recentPkgs = $allPkgs | Where-Object { $_.InstallTime } | Sort-Object InstallTime -Descending | Select-Object -First 10
+                foreach ($rp in $recentPkgs) {
+                    Write-TSLog "InstallTime debug: $($rp.PackageName) | $($rp.InstallTime) | $($rp.ReleaseType)" -Level "DEBUG"
+                }
+            }
+        } catch {
+            Write-TSLog "InstallTime correlation error: $_" -Level "WARN"
+        }
     }
 
     return $result
+}
+
+# Funció auxiliar per processar blocs de sortida de DISM.exe
+function _Process-DismBlock {
+    param(
+        [string]$Block,
+        [string]$KB,
+        [string]$KB_Numeric,
+        [PSObject]$Result
+    )
+
+    # Buscar el KB en qualsevol part del bloc (Package Identity, Install Name, etc.)
+    if ($Block -match $KB_Numeric -or $Block -match $KB) {
+        Write-TSLog "DISM.exe block: Trobat KB en el bloc de sortida" -Level "DEBUG"
+
+        if ($Block -match "Package Identity\s*:\s*(.+)" ) {
+            $pkgId = $Matches[1].Trim()
+            if (-not $Result.PackageName) { $Result.PackageName = $pkgId }
+            $Result.IsInstalled = $true
+            if (-not $Result.DetectMethod) { $Result.DetectMethod = "DISM.exe scan" }
+            $Result.Details += "DISM.exe scan: $pkgId"
+            Write-TSLog "DISM.exe: Trobat paquet $pkgId" -Level "INFO"
+        }
+
+        if ($Block -match "State\s*:\s*(.+)" ) {
+            $state = $Matches[1].Trim()
+            Write-TSLog "DISM.exe: Package state = $state" -Level "DEBUG"
+            if ($state -match "Install Pending|Staged") {
+                $Result.IsPending = $true
+            }
+        }
+
+        if ($Block -match "Release Type\s*:\s*(.+)" ) {
+            $relType = $Matches[1].Trim()
+            Write-TSLog "DISM.exe: Release type = $relType" -Level "DEBUG"
+        }
+
+        if ($Block -match "Install Time\s*:\s*(.+)" ) {
+            Write-TSLog "DISM.exe: Install time = $($Matches[1].Trim())" -Level "DEBUG"
+        }
+    }
 }
 
 # ============================================================================
@@ -571,6 +664,9 @@ if (-not $removalSuccess) {
     } else {
         # Intentar trobar el nom del paquet amb pattern matching genèric
         Write-TSLog "DISM: Cercant paquet amb patrons alternatius..." -Level "INFO"
+        $packageFound = $false
+
+        # Sub-via 2a: pattern matching al PackageName
         try {
             $genericPkg = Get-WindowsPackage -Online -ErrorAction Stop |
                 Where-Object { $_.PackageName -like "*$($KB_Numeric)*" -or
@@ -578,13 +674,66 @@ if (-not $removalSuccess) {
                 Select-Object -First 1
 
             if ($genericPkg) {
-                Write-TSLog "DISM: Trobat paquet alternatiu: $($genericPkg.PackageName)" -Level "INFO"
+                Write-TSLog "DISM: Trobat paquet per patron: $($genericPkg.PackageName)" -Level "INFO"
                 $removalSuccess = Remove-UpdateViaDISM -PackageName $genericPkg.PackageName
-            } else {
-                Write-TSLog "DISM: No s'ha trobat cap paquet amb el patró $KB_Numeric" -Level "WARN"
+                $packageFound = $true
             }
         } catch {
-            Write-TSLog "DISM cerca alternativa ha fallat: $_" -Level "ERROR"
+            Write-TSLog "DISM cerca per patró ha fallat: $_" -Level "ERROR"
+        }
+
+        # Sub-via 2b: CBS InstallName (runtime search)
+        if (-not $packageFound) {
+            Write-TSLog "CBS InstallName runtime: Buscant clau amb InstallName=$KB..." -Level "INFO"
+            try {
+                $cbsRegPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\Packages"
+                $allCbsKeys = Get-ChildItem -Path $cbsRegPath -ErrorAction Stop
+                foreach ($cbsKey in $allCbsKeys) {
+                    $installName = (Get-ItemProperty -Path $cbsKey.PSPath -Name "InstallName" -ErrorAction SilentlyContinue).InstallName
+                    if ($installName -eq $KB -or $installName -eq $KB_Numeric) {
+                        Write-TSLog "CBS InstallName runtime: Trobat! $($cbsKey.PSChildName)" -Level "SUCCESS"
+                        $removalSuccess = Remove-UpdateViaDISM -PackageName $cbsKey.PSChildName
+                        $packageFound = $true
+                        break
+                    }
+                }
+            } catch {
+                Write-TSLog "CBS InstallName runtime search error: $_" -Level "WARN"
+            }
+        }
+
+        # Sub-via 2c: Correlació per InstallTime (últim recurs)
+        if (-not $packageFound -and $updateStatus.InstalledOn) {
+            Write-TSLog "InstallTime runtime: Buscant paquets propers a $($updateStatus.InstalledOn)..." -Level "INFO"
+            try {
+                $allPkgs = Get-WindowsPackage -Online -ErrorAction Stop
+                $bestMatch = $null
+                $bestDiff = 99999
+
+                foreach ($pkg in $allPkgs) {
+                    if ($pkg.InstallTime -and $pkg.ReleaseType -in @('Update', 'Security Update', 'Hotfix', 'UpdateEx')) {
+                        $diff = [Math]::Abs(($pkg.InstallTime - $updateStatus.InstalledOn).TotalMinutes)
+                        if ($diff -lt 120 -and $diff -lt $bestDiff) {
+                            $bestMatch = $pkg
+                            $bestDiff = $diff
+                        }
+                    }
+                }
+
+                if ($bestMatch) {
+                    Write-TSLog "InstallTime runtime: Trobat! $($bestMatch.PackageName) (diff=$([math]::Round($bestDiff,1)) min)" -Level "SUCCESS"
+                    $removalSuccess = Remove-UpdateViaDISM -PackageName $bestMatch.PackageName
+                    $packageFound = $true
+                } else {
+                    Write-TSLog "InstallTime runtime: No s'ha trobat cap paquet dins de +/-2h" -Level "WARN"
+                }
+            } catch {
+                Write-TSLog "InstallTime runtime search error: $_" -Level "WARN"
+            }
+        }
+
+        if (-not $packageFound) {
+            Write-TSLog "DISM: No s'ha pogut trobar el paquet per cap via disponible" -Level "WARN"
         }
     }
 }
