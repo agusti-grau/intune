@@ -154,6 +154,81 @@ function Test-IsAdministrator {
 }
 
 # ============================================================================
+# REGIÓ: Funcions de fallback DISM (quan el cmdlet COM falla)
+# ============================================================================
+
+function Get-AllPackagesViaDISM {
+    <#
+    .SYNOPSIS
+        Obté tots els paquets via dism.exe (fallback quan Get-WindowsPackage falla amb "Class not registered")
+    #>
+    try {
+        Write-TSLog "dism.exe: Obtenint llista de paquets via /get-packages..." -Level "DEBUG"
+        $output = & dism.exe /online /get-packages /format:list /english 2>&1
+        $packages = @()
+        $current  = @{}
+
+        foreach ($line in $output) {
+            if ($line -match '^\s*Package Identity\s*:\s*(.+)$') {
+                if ($current.Count -gt 0 -and $current.ContainsKey('PackageName')) {
+                    $packages += [PSCustomObject]$current
+                }
+                $current = @{ PackageName = $Matches[1].Trim() }
+            } elseif ($line -match '^\s*State\s*:\s*(.+)$') {
+                $current['PackageState'] = $Matches[1].Trim()
+            } elseif ($line -match '^\s*Release Type\s*:\s*(.+)$') {
+                $current['ReleaseType'] = $Matches[1].Trim()
+            } elseif ($line -match '^\s*Install Time\s*:\s*(.+)$') {
+                $installTimeStr = $Matches[1].Trim()
+                $parsed = $false
+                # Intentar múltiples formats de data (dism.exe /english usa M/d/yyyy, el locale pot variar)
+                $formats = @('M/d/yyyy H:mm:ss', 'M/d/yyyy H:mm',
+                             'd/M/yyyy H:mm:ss', 'd/M/yyyy H:mm',
+                             'M/d/yyyy HH:mm:ss', 'd/M/yyyy HH:mm:ss')
+                $culture = [System.Globalization.CultureInfo]::GetCultureInfo('en-US')
+                foreach ($fmt in $formats) {
+                    try { $current['InstallTime'] = [DateTime]::ParseExact($installTimeStr, $fmt, $culture); $parsed = $true; break } catch {}
+                }
+                if (-not $parsed) {
+                    try { $current['InstallTime'] = [DateTime]::Parse($installTimeStr) } catch {}
+                }
+            }
+        }
+
+        if ($current.Count -gt 0 -and $current.ContainsKey('PackageName')) {
+            $packages += [PSCustomObject]$current
+        }
+
+        Write-TSLog "dism.exe: Trobats $($packages.Count) paquets" -Level "DEBUG"
+        return $packages
+    } catch {
+        Write-TSLog "dism.exe get-packages ha fallat: $_" -Level "ERROR"
+        throw
+    }
+}
+
+function Get-AllPackagesRobust {
+    <#
+    .SYNOPSIS
+        Obté tots els paquets: primer via Get-WindowsPackage, si falla via dism.exe
+    #>
+    try {
+        $pkgs = Get-WindowsPackage -Online -ErrorAction Stop
+        Write-TSLog "Get-WindowsPackage: Obtinguts $($pkgs.Count) paquets" -Level "DEBUG"
+        return $pkgs
+    } catch {
+        if ($_.Exception.Message -match 'Class not registered|0x80040154' -or
+            $_.Exception.Message -match 'clase no registrada|classe no registrada') {
+            Write-TSLog "Get-WindowsPackage COM no disponible (DISM module danyat?). Usant dism.exe com a fallback..." -Level "WARN"
+        } else {
+            Write-TSLog "Get-WindowsPackage ha fallat: $_. Usant dism.exe com a fallback..." -Level "WARN"
+        }
+    }
+
+    return Get-AllPackagesViaDISM
+}
+
+# ============================================================================
 # REGIÓ: Funcions de detecció
 # ============================================================================
 
@@ -191,7 +266,7 @@ function Get-UpdateStatus {
 
     # Mètode 2: DISM Get-WindowsPackage (direct name match)
     try {
-        $dismPkgs = Get-WindowsPackage -Online -ErrorAction Stop |
+        $dismPkgs = Get-AllPackagesRobust |
             Where-Object { $_.PackageName -like "*$($KB_Numeric)*" -or
                            $_.PackageName -like "*$($KB)*" }
 
@@ -232,7 +307,7 @@ function Get-UpdateStatus {
             Write-TSLog "DISM direct: Cap paquet amb nom coincident amb $KB_Numeric" -Level "DEBUG"
         }
     } catch {
-        Write-TSLog "DISM Get-WindowsPackage ha fallat: $_" -Level "WARN"
+        Write-TSLog "Get-AllPackagesRobust ha fallat: $_" -Level "WARN"
     }
 
     # Mètode 3: DISM.exe /format:list amb scanning complet de tots els camps
@@ -350,7 +425,7 @@ function Get-UpdateStatus {
     if ($result.IsInstalled -and -not $result.PackageName -and $result.InstalledOn) {
         try {
             Write-TSLog "InstallTime: Buscant paquets instal·lats prop de $($result.InstalledOn)..." -Level "DEBUG"
-            $allPkgs = Get-WindowsPackage -Online -ErrorAction Stop
+            $allPkgs = Get-AllPackagesRobust
             $candidates = @()
 
             foreach ($pkg in $allPkgs) {
@@ -694,7 +769,7 @@ if (-not $removalSuccess) {
 
         # Sub-via 2a: pattern matching al PackageName
         try {
-            $genericPkg = Get-WindowsPackage -Online -ErrorAction Stop |
+            $genericPkg = Get-AllPackagesRobust |
                 Where-Object { $_.PackageName -like "*$($KB_Numeric)*" -or
                                $_.PackageName -like "*$($KB)*" } |
                 Select-Object -First 1
@@ -732,7 +807,7 @@ if (-not $removalSuccess) {
         if (-not $packageFound -and $updateStatus.InstalledOn) {
             Write-TSLog "InstallTime runtime: Buscant paquets propers a $($updateStatus.InstalledOn)..." -Level "INFO"
             try {
-                $allPkgs = Get-WindowsPackage -Online -ErrorAction Stop
+                $allPkgs = Get-AllPackagesRobust
                 $candidates = @()
 
                 foreach ($pkg in $allPkgs) {
